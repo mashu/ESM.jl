@@ -6,6 +6,7 @@ module ESM
     using NeuralAttentionlib.Masks
 
     export SwiGLUFFN, RotaryEmbedding, MultiHeadAttention
+    export RegressionHead, UnifiedTransformerBlock, TransformerStack, TransformerOutput
 
     function silu(x::AbstractArray)
         return x .* σ.(x)
@@ -160,5 +161,125 @@ module ESM
         output = mha.out_proj(context)
 
         return return_attention ? (output, score) : output
+    end
+
+    # RegressionHead component
+    struct RegressionHead
+        linear1::Dense
+        activation::Function
+        norm::LayerNorm
+        linear2::Dense
+    end
+    Flux.@layer RegressionHead
+    function RegressionHead(d_model::Int, output_dim::Int; hidden_dim::Union{Int,Nothing}=nothing)
+        hidden_dim = isnothing(hidden_dim) ? d_model : hidden_dim
+
+        return RegressionHead(
+            Dense(d_model => hidden_dim),
+            gelu,
+            LayerNorm(hidden_dim),
+            Dense(hidden_dim => output_dim)
+        )
+    end
+    function (m::RegressionHead)(x::AbstractArray)
+        x = m.linear1(x)
+        x = m.activation(x)
+        x = m.norm(x)
+        return m.linear2(x)
+    end
+
+    struct UnifiedTransformerBlock{F <: AbstractFloat}
+        attn::MultiHeadAttention
+        ffn::SwiGLUFFN
+        scaling_factor::F
+    end
+    Flux.@layer UnifiedTransformerBlock
+    function UnifiedTransformerBlock(
+        d_model::Int,
+        n_heads::Int;
+        residue_scaling_factor::Float32=1.0f0,
+        expansion_ratio::Float32=8.0f0/3.0f0
+    )
+        return UnifiedTransformerBlock(
+            MultiHeadAttention(d_model, n_heads),
+            SwiGLUFFN(d_model, expansion_ratio),
+            residue_scaling_factor
+        )
+    end
+    function (m::UnifiedTransformerBlock)(
+        x::AbstractArray;
+        mask=nothing,
+        return_attention::Bool=false
+    )
+        if return_attention
+            attn_output, attn_weights = m.attn(x; mask=mask, return_attention=true)
+        else
+            attn_output = m.attn(x; mask=mask, return_attention=false)
+        end
+
+        x = x + attn_output / m.scaling_factor
+        x = x + m.ffn(x) / m.scaling_factor
+
+        return return_attention ? (x, attn_weights) : x
+    end
+
+    struct TransformerStack
+        blocks::Vector{UnifiedTransformerBlock}
+        norm::LayerNorm
+    end
+    Flux.@layer TransformerStack
+    function TransformerStack(
+        d_model::Int,
+        n_heads::Int,
+        n_layers::Int
+    )
+        blocks = [
+            UnifiedTransformerBlock(
+                d_model,
+                n_heads,
+                residue_scaling_factor=Float32(sqrt(n_layers / 36))
+            )
+            for _ in 1:n_layers
+        ]
+
+        return TransformerStack(
+            blocks,
+            LayerNorm(d_model, affine=false)
+        )
+    end
+
+    struct TransformerOutput
+        last_hidden_state::AbstractArray
+        hidden_states::Union{Nothing,Vector{AbstractArray}}
+        attentions::Union{Nothing,Vector{AbstractArray}}
+    end
+
+    function (m::TransformerStack)(
+        x::AbstractArray;
+        attention_mask=nothing,
+        output_hidden_states::Bool=false,
+        output_attentions::Bool=false
+    )
+        hidden_states = output_hidden_states ? AbstractArray[] : nothing
+        attentions = output_attentions ? AbstractArray[] : nothing
+
+        for block in m.blocks
+            if output_attentions
+                x, attn_weights = block(x; mask=attention_mask, return_attention=true)
+                if !isnothing(attentions)
+                    push!(attentions, attn_weights)
+                end
+            else
+                x = block(x; mask=attention_mask, return_attention=false)
+            end
+
+            if output_hidden_states && !isnothing(hidden_states)
+                push!(hidden_states, x)
+            end
+        end
+
+        x = m.norm(x)
+
+        return TransformerOutput(x, hidden_states, attentions)
     end
 end

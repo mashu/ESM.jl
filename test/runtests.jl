@@ -239,6 +239,95 @@ function test_mha_with_mask_and_attention()
     end
 end
 
+function test_regression_head()
+    @testset "RegressionHead" begin
+        # Test dimensions
+        d_model = 64
+        output_dim = 10
+        hidden_dim = 32
+        batch_size = 2
+        seq_len = 3
+
+        # Create input tensor [d_model, seq_len, batch]
+        x = randn(Float32, d_model, seq_len, batch_size)
+
+        # Test with default hidden_dim
+        head1 = ESM.RegressionHead(d_model, output_dim)
+        out1 = head1(x)
+        @test size(out1) == (output_dim, seq_len, batch_size)
+
+        # Test with custom hidden_dim
+        head2 = ESM.RegressionHead(d_model, output_dim, hidden_dim=hidden_dim)
+        out2 = head2(x)
+        @test size(out2) == (output_dim, seq_len, batch_size)
+    end
+end
+
+function test_unified_transformer_block()
+    @testset "UnifiedTransformerBlock" begin
+        # Setup dimensions
+        d_model = 64
+        n_heads = 4
+        seq_len = 8
+        batch_size = 2
+
+        # Create input tensor [d_model, seq_len, batch]
+        x = randn(Float32, d_model, seq_len, batch_size)
+
+        # Create block
+        block = ESM.UnifiedTransformerBlock(d_model, n_heads)
+
+        # Test without mask or attention return
+        output1 = block(x)
+        @test size(output1) == (d_model, seq_len, batch_size)
+
+        # Test with mask
+        mask = CausalMask()
+        output2 = block(x, mask=mask)
+        @test size(output2) == (d_model, seq_len, batch_size)
+
+        # Test with attention return
+        output3, attention = block(x, return_attention=true)
+        @test size(output3) == (d_model, seq_len, batch_size)
+        @test size(attention) == (seq_len, seq_len, n_heads, batch_size)
+    end
+end
+
+function test_transformer_stack()
+    @testset "TransformerStack" begin
+        # Setup dimensions
+        d_model = 64
+        n_heads = 4
+        n_layers = 3
+        seq_len = 8
+        batch_size = 2
+
+        # Create input tensor [d_model, seq_len, batch]
+        x = randn(Float32, d_model, seq_len, batch_size)
+
+        # Create stack
+        stack = ESM.TransformerStack(d_model, n_heads, n_layers)
+
+        # Test basic forward pass
+        output = stack(x)
+        @test size(output.last_hidden_state) == (d_model, seq_len, batch_size)
+        @test isnothing(output.hidden_states)
+        @test isnothing(output.attentions)
+
+        # Test with hidden states collection
+        output = stack(x, output_hidden_states=true)
+        @test size(output.last_hidden_state) == (d_model, seq_len, batch_size)
+        @test length(output.hidden_states) == n_layers
+        @test all(size(hs) == (d_model, seq_len, batch_size) for hs in output.hidden_states)
+
+        # Test with attention weights collection
+        output = stack(x, output_attentions=true)
+        @test size(output.last_hidden_state) == (d_model, seq_len, batch_size)
+        @test length(output.attentions) == n_layers
+        @test all(size(attn) == (seq_len, seq_len, n_heads, batch_size) for attn in output.attentions)
+    end
+end
+
 @testset "SwiGLUFFN" begin
     test_swiglu_layer()
 end
@@ -251,4 +340,16 @@ end
 @testset "MultiHeadAttention" begin
     test_multihead_attention()
     test_mha_with_mask_and_attention()
+end
+
+@testset "RegressionHead" begin
+    test_regression_head()
+end
+
+@testset "UnifiedTransformerBlock" begin
+    test_unified_transformer_block()
+end
+
+@testset "TransformerStack" begin
+    test_transformer_stack()
 end
