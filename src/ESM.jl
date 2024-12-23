@@ -10,7 +10,6 @@ module ESM
     function silu(x::AbstractArray)
         return x .* σ.(x)
     end
-
     function swiglu(x::AbstractArray; feature_dim=1)
         x1, x2 = Flux.chunk(x, 2, dims=feature_dim)
         return silu(x1) .* x2
@@ -41,15 +40,12 @@ module ESM
     end
     Flux.@layer SwiGLUFFN
 
-    # RoPE implementation components
     function rotate_half(x::AbstractArray)
         # x is [d_head, n_heads, seq_len, batch]
-        # We need to rotate along the first dimension (d_head)
         d_2 = size(x, 1) ÷ 2
         return vcat(-view(x, (d_2+1):size(x,1), :, :, : ),
                     view(x, 1:d_2, :, :, : ))
     end
-
     struct RotaryEmbedding
         dim::Int
         base::Float32
@@ -70,7 +66,6 @@ module ESM
     end
     Flux.@layer RotaryEmbedding
     Flux.trainable(::RotaryEmbedding) = (;)
-
     function (re::RotaryEmbedding)(q::AbstractArray, k::AbstractArray)
         # q, k shapes: [d_head, n_heads, seq_len, batch]
         seq_len = size(q, 3)
@@ -79,7 +74,6 @@ module ESM
         d_head = size(q, 1)
         @assert d_head == re.dim "Input dimension must match RotaryEmbedding dimension"
 
-        # Use views into cached cos/sin values
         cos = @view re.cos_cached[:, 1:seq_len]  # [dim/2, seq_len]
         sin = @view re.sin_cached[:, 1:seq_len]  # [dim/2, seq_len]
 
@@ -92,7 +86,6 @@ module ESM
         q1, q2 = view(q, 1:d_head÷2, :, :, :), view(q, (d_head÷2+1):d_head, :, :, :)
         k1, k2 = view(k, 1:d_head÷2, :, :, :), view(k, (d_head÷2+1):d_head, :, :, :)
 
-        # Apply rotation using broadcasting
         q_new = vcat(q1 .* cos_exp .- q2 .* sin_exp,
                     q2 .* cos_exp .+ q1 .* sin_exp)
         k_new = vcat(k1 .* cos_exp .- k2 .* sin_exp,
@@ -123,13 +116,11 @@ module ESM
 
         return MultiHeadAttention(layernorm_qkv, out_proj, q_ln, k_ln, n_heads, rotary)
     end
-
     function (mha::MultiHeadAttention)(
         x::AbstractArray;
         mask=nothing,
         return_attention::Bool=false
     )
-        # First apply layernorm then QKV projection
         qkv = mha.layernorm_qkv(x)
         q, k, v = Flux.chunk(qkv, 3, dims=1)
 
@@ -149,7 +140,6 @@ module ESM
         q = reshape(q_rotary, :, size(q, 2), size(q, 3))
         k = reshape(k_rotary, :, size(k, 2), size(k, 3))
 
-        # Use multihead_qkv_attention
         if return_attention
             context, score = NeuralAttentionlib.multihead_qkv_attention(
                 NeuralAttentionlib.score_returning,
@@ -167,10 +157,8 @@ module ESM
             )
         end
 
-        # Project output
         output = mha.out_proj(context)
 
         return return_attention ? (output, score) : output
     end
 end
-
