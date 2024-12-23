@@ -5,39 +5,38 @@ using Test
 using Statistics
 using NeuralAttentionlib
 using NeuralAttentionlib.Masks
+using Zygote: gradient
 
 function test_swiglu_layer()
-    # Load test data
-    test_data = load_safetensors("swiglu_test.safetensors")
+    @testset "SwiGLU Layer" begin
+        # Forward pass test with loaded weights
+        test_data = load_safetensors("swiglu_test.safetensors")
+        x = permutedims(Array(test_data["input"]), (3,2,1))  # Convert to Julia's layout
+        expected_output = permutedims(Array(test_data["output"]), (3,2,1))
 
-    # Extract tensors
-    x = permutedims(Array(test_data["input"]), (3,2,1))  # Convert to Julia's layout
-    expected_output = permutedims(Array(test_data["output"]), (3,2,1))
+        d_model = size(x, 1)
+        ffn = SwiGLUFFN(d_model, 2.0)
 
-    # Create layer with loaded weights
-    d_model = size(x, 1)
-    ffn = SwiGLUFFN(d_model, 2.0)
+        # Load weights
+        ffn.norm.diag.scale .= Array(test_data["ln.weight"])
+        ffn.norm.diag.bias .= Array(test_data["ln.bias"])
+        ffn.dense1.weight .= permutedims(Array(test_data["dense1.weight"]), (1,2))
+        ffn.dense2.weight .= permutedims(Array(test_data["dense2.weight"]), (1,2))
 
-    # Load weights
-    ffn.norm.diag.scale .= Array(test_data["ln.weight"])
-    ffn.norm.diag.bias .= Array(test_data["ln.bias"])
-    ffn.dense1.weight .= permutedims(Array(test_data["dense1.weight"]), (1,2))
-    ffn.dense2.weight .= permutedims(Array(test_data["dense2.weight"]), (1,2))
+        output = ffn(x)
 
-    # Get output
-    output = ffn(x)
-
-    # Compare outputs
-    rtol = 1e-4  # Relative tolerance
-    atol = 1e-4  # Absolute tolerance
-
-    @testset "SwiGLU Layer Tests" begin
+        # Test forward pass
         @test size(output) == size(expected_output)
-        @test all(isapprox.(output, expected_output, rtol=rtol, atol=atol))
+        @test all(isapprox.(output, expected_output, rtol=1f-4, atol=1f-4))
 
-        # Print mean absolute error for debugging
-        mae = mean(abs.(output - expected_output))
-        println("Mean Absolute Error: $mae")
+        # Test differentiability
+        loss(m, x) = sum(abs2, m(x))
+        gs = gradient(m -> loss(m, x), ffn)[1]
+
+        @test !isnothing(gs.norm.diag.scale)
+        @test !isnothing(gs.norm.diag.bias)
+        @test !isnothing(gs.dense1.weight)
+        @test !isnothing(gs.dense2.weight)
     end
 end
 
