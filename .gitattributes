@@ -1,0 +1,2 @@
+test/swiglu_test.safetensors filter=lfs diff=lfs merge=lfs -text
+test/mha_test.safetensors filter=lfs diff=lfs merge=lfs -text
