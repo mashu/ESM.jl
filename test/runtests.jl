@@ -4,6 +4,7 @@ using SafeTensors
 using Test
 using Statistics
 using NeuralAttentionlib
+using NeuralAttentionlib.Masks
 
 function test_swiglu_layer()
     # Load test data
@@ -168,12 +169,86 @@ function test_multihead_attention()
     end
 end
 
-@testset "ESM.jl" begin
-    @testset "SwiGLUFFN" begin
-        test_swiglu_layer()
+function test_rotate_half()
+    @testset "rotate_half Tests" begin
+        # Test with small array
+        x = reshape(Float32.(1:16), (4, 2, 2, 1))  # [d_head, n_heads, seq_len, batch]
+        rotated = ESM.rotate_half(x)
+
+        # Check dimensions haven't changed
+        @test size(rotated) == size(x)
+
+        # Check that the rotation happened correctly
+        # First half should be negated second half
+        # Second half should be original first half
+        d_2 = size(x, 1) ÷ 2
+        @test rotated[1:d_2, :, :, :] == -x[(d_2+1):end, :, :, :]
+        @test rotated[(d_2+1):end, :, :, :] == x[1:d_2, :, :, :]
     end
+end
+
+function test_rotary_embedding_trainable()
+    @testset "RotaryEmbedding Trainable Parameters" begin
+        re = RotaryEmbedding(64)
+        # Should return empty NamedTuple
+        @test isempty(Flux.trainable(re))
+    end
+end
+
+function test_mha_with_mask_and_attention()
+    @testset "MultiHeadAttention with Mask and Attention Return" begin
+        # Setup dimensions
+        d_model = 64
+        n_heads = 4
+        seq_len = 8
+        batch_size = 2
+
+        # Create input tensor [d_model, seq_len, batch]
+        x = randn(Float32, d_model, seq_len, batch_size)
+
+        # Create proper attention mask using NeuralAttentionlib
+        mask = CausalMask()
+
+        # Initialize MHA
+        mha = ESM.MultiHeadAttention(d_model, n_heads)
+
+        # Test without mask or attention return
+        output1 = mha(x)
+        @test size(output1) == (d_model, seq_len, batch_size)
+
+        # Test with mask
+        output2 = mha(x; mask=mask)
+        @test size(output2) == (d_model, seq_len, batch_size)
+
+        # Test with attention scores return
+        output3, attention = mha(x; return_attention=true)
+        @test size(output3) == (d_model, seq_len, batch_size)
+        @test size(attention) == (seq_len, seq_len, n_heads, batch_size)
+
+        # Test with both mask and attention return
+        output4, attention_masked = mha(x; mask=mask, return_attention=true)
+        @test size(output4) == (d_model, seq_len, batch_size)
+        @test size(attention_masked) == (seq_len, seq_len, n_heads, batch_size)
+
+        # Check that masked attention scores follow causal pattern
+        mask_pattern = trues(seq_len, seq_len) .* mask  # Get the actual mask pattern
+
+        # Test that all values where mask is false are approximately zero
+        # This creates a single test that checks all masked positions at once
+        @test all(abs.(attention_masked[.!mask_pattern, :, :]) .< 1e-6)
+    end
+end
+
+@testset "SwiGLUFFN" begin
+    test_swiglu_layer()
+end
+
+@testset "RotaryEmbedding" begin
+    test_rotate_half()
+    test_rotary_embedding_trainable()
 end
 
 @testset "MultiHeadAttention" begin
     test_multihead_attention()
+    test_mha_with_mask_and_attention()
 end
