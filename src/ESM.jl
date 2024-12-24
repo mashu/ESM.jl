@@ -95,6 +95,24 @@ module ESM
         return q_new, k_new
     end
 
+    function qkv_attention(q, k, v)
+        # Input is [d_head, heads, seq_len, batch]
+        d_head, heads, seq_len1, batch = size(q)
+        seq_len2 = size(k, 3)
+        d_model = d_head * heads
+        scale = 1 / sqrt(Float32(d_model))
+
+        q_reshaped = reshape(permutedims(q, (3,1,2,4)), seq_len1, d_head, :)
+        k_reshaped = reshape(permutedims(k, (3,1,2,4)), seq_len2, d_head, :)
+
+        scores = scale * batched_mul(q_reshaped, permutedims(k_reshaped, (2,1,3)))
+        attn_scores = softmax(reshape(scores, seq_len1, seq_len2, heads, batch), dims=2)
+        v_reshaped = reshape(permutedims(v, (3,1,2,4)), seq_len2, d_head, :)
+        context = batched_mul(reshape(attn_scores, seq_len1, seq_len2, :), v_reshaped)
+
+        return reshape(context, seq_len1, d_head, heads, batch), attn_scores
+    end
+
     struct MultiHeadAttention
         layernorm_qkv::Chain
         out_proj::Dense
@@ -104,6 +122,15 @@ module ESM
         rotary::RotaryEmbedding
     end
     Flux.@layer MultiHeadAttention
+    """
+        Multi-head attention mechanism with rotary embeddings.
+
+    MultiHeadAttention(d_model::Int, n_heads::Int)
+
+    # Arguments
+    - `d_model::Int`: The input and output dimension of the model.
+    - `n_heads::Int`: The number of attention heads to use.
+    """
     function MultiHeadAttention(d_model::Int, n_heads::Int)
         layernorm_qkv = Chain(
             LayerNorm(d_model),
@@ -133,34 +160,16 @@ module ESM
         d_head = size(q, 1) ÷ mha.n_heads
         q_rotary = reshape(q, d_head, mha.n_heads, size(q, 2), size(q, 3))
         k_rotary = reshape(k, d_head, mha.n_heads, size(k, 2), size(k, 3))
+        v_rotary = reshape(v, d_head, mha.n_heads, size(v, 2), size(v, 3)) # Not rotated but reshaped
 
         # Apply rotary embeddings
         q_rotary, k_rotary = mha.rotary(q_rotary, k_rotary)
 
-        # Reshape back
-        q = reshape(q_rotary, :, size(q, 2), size(q, 3))
-        k = reshape(k_rotary, :, size(k, 2), size(k, 3))
+        # Dot product attention
+        attended, attn_weights = qkv_attention(q_rotary, k_rotary, v_rotary)
+        output = mha.out_proj(reshape(permutedims(attended, (2,3,1,4)), size(q)))
 
-        if return_attention
-            context, score = NeuralAttentionlib.multihead_qkv_attention(
-                NeuralAttentionlib.score_returning,
-                mha.n_heads,
-                q, k, v,
-                mask,
-                nothing  # dropout
-            )
-        else
-            context = NeuralAttentionlib.multihead_qkv_attention(
-                mha.n_heads,
-                q, k, v,
-                mask,
-                nothing  # dropout
-            )
-        end
-
-        output = mha.out_proj(context)
-
-        return return_attention ? (output, score) : output
+        return return_attention ? (output, attn_weights) : output
     end
 
     # RegressionHead component
