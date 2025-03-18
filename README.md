@@ -1,4 +1,4 @@
-# JESMC
+# ESM-C
 
 Julia implementation of [ESM Cambrian](https://www.evolutionaryscale.ai/blog/esm-cambrian) faithfully following [HuggingFace ESM++](https://huggingface.co/Synthyra/ESMplusplus_large) and using SafeTensors for numerical parity.
 
